@@ -87,7 +87,7 @@ def parse_srt(srt_file: str):
         items.append((start, end, m.group(4).strip().replace('\n', ' ')))
     return items
 
-# CẤU HÌNH KỊCH TRẦN 65.536 TOKENS CHO VIDEO DÀI
+# CẤU HÌNH MAX TOKENS 65536 CHO PHIM DÀI 1 TIẾNG
 def get_srt_from_gemini_auto(video_path: str, model_list=CONFIG["models"], output_srt: str = "temp_sub.srt"):
     print("[*] Đang tải video lên bộ nhớ Gemini...")
     safe_video_path = "upload_for_gemini.mp4"
@@ -98,7 +98,6 @@ def get_srt_from_gemini_auto(video_path: str, model_list=CONFIG["models"], outpu
         v_file = client.files.get(name=v_file.name)
     if v_file.state.name != "ACTIVE": raise Exception("Gemini không đọc được video.")
 
-    # MỞ KHÓA 65536 OUTPUT TOKENS
     config = types.GenerateContentConfig(
         system_instruction=YAN_BASE_INSTRUCTIONS,
         temperature=0.1,
@@ -106,7 +105,7 @@ def get_srt_from_gemini_auto(video_path: str, model_list=CONFIG["models"], outpu
     )
     resp = None
     for model_name in model_list:
-        print(f"[*] AI đang xem và dịch toàn bộ phim dài bằng {model_name}...")
+        print(f"[*] AI đang xem và dịch video bằng {model_name}...")
         for attempt in range(1, 4):
             try:
                 r = client.models.generate_content(model=model_name, contents=[v_file, "Xuất SRT 1 dòng chuẩn theo quy tắc."], config=config)
@@ -269,163 +268,6 @@ def main():
         out_name = os.path.join(output_dir, f"{base_name}_Vietsub.mp4")
         print(f"\n=======================================================")
         print(f"▶️ [{idx}/{len(video_files)}] Đang làm phim: {base_name}")
-        print(f"=======================================================")
-
-        try:
-            srt_p, first_sec = get_srt_from_gemini_auto(video_path)
-            y1, y2 = detect_sub_zone_from_frame(video_path, first_sec, CONFIG["models"][0])
-            tts_p = build_synced_tts_track(srt_p, CONFIG["voice"])
-            render_final_video_auto(video_path, srt_p, tts_p, out_name, CHANNEL_SUB_NAME, y1, y2)
-            print(f"[✓] HOÀN TẤT: {out_name}")
-        except Exception as e:
-            print(f"[❌] Lỗi khi xử lý {base_name}: {e}")
-            print("⏩ Nhảy sang video tiếp theo...")
-        clean_trash()
-
-    print("\n🎉 ĐÃ XỬ LÝ XONG TẤT CẢ VIDEO!")
-
-if __name__ == "__main__":
-    main()ideo, srt_file, tts_audio, output_final, sub_name, y1_pct, y2_pct, sub_fontsize=16, font_family="Comfortaa"):
-    w, h = get_video_dimensions(input_video)
-    y_start = (int(h * y1_pct) // 2) * 2
-    crop_h = (int(h * (y2_pct - y1_pct)) // 2) * 2
-    crop_h = max(24, min(crop_h, h - y_start))
-
-    y_center_pct = (y1_pct + y2_pct) / 2.0
-    center_margin_v = max(4, int((1.0 - y_center_pct) * 288 - (int(sub_fontsize) / 4)))
-
-    t_sub = sub_name.replace("'", "").replace(":", " -")
-    srt_p = os.path.abspath(srt_file).replace("\\", "/")
-
-    font_name = "Comfortaa"
-    if "Roboto" in font_family: font_name = "Roboto"
-    font_org_cmd = f":fontfile='{CJK_FONT}'" if os.path.exists(CJK_FONT) else ""
-
-    # Dùng dải mờ cố định xuyên suốt phim: Vừa đẹp như bản gốc, vừa không làm sập FFmpeg
-    vf = (
-        f"[0:v]split[m][c];"
-        f"[c]crop=iw:{crop_h}:0:{y_start},boxblur=12:1[b];"
-        f"[m][b]overlay=0:{y_start}[v1];"
-        f"[v1]drawtext=text='sub - {t_sub}':x=25:y=25{font_org_cmd}:fontcolor=white:shadowcolor=black:shadowx=1:shadowy=1,"
-        f"drawtext=text='{t_sub}':x='mod(t*65,w+tw)-tw':y='mod(t*32,h+th)-th':fontsize=20:fontcolor=white@0.10,"
-        f"subtitles=filename='{srt_p}':force_style='FontName={font_name},FontSize={int(sub_fontsize)},Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2.0,Alignment=2,MarginV={center_margin_v}'[vout]"
-    )
-
-    print("[*] Đang render video 1 tiếng với tốc độ cao...")
-    if tts_audio and os.path.exists(tts_audio):
-        af = "[0:a]volume=0.15[bg];[1:a]volume=1.0[voice];[bg][voice]amix=inputs=2:duration=first:dropout_transition=0[aout]"
-        cmd = ["ffmpeg", "-y", "-i", input_video, "-i", tts_audio, "-filter_complex", f"{vf};{af}", "-map", "[vout]", "-map", "[aout]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22", output_final]
-    else:
-        cmd = ["ffmpeg", "-y", "-i", input_video, "-filter_complex", vf, "-map", "[vout]", "-map", "0:a?", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22", "-c:a", "copy", output_final]
-
-    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if res.returncode != 0:
-        raise Exception(f"Lỗi FFmpeg: {res.stderr[-400:]}")
-    return output_final
-
-def clean_trash():
-    shutil.rmtree("temp_tts", ignore_errors=True)
-    for f in ["upload_for_gemini.mp4", "temp_sub.srt", "full_tts.wav", "sub_sample.jpg"]:
-        if os.path.exists(f): 
-            try: os.remove(f)
-            except: pass
-
-def main():
-    input_dir = "input_videos"
-    output_dir = "output_videos"
-    os.makedirs(input_dir, exist_ok=True)
-    os.makedirs(output_dir, exist_ok=True)
-
-    raw_files = []
-    for ext in ("*.mp4", "*.mov", "*.mkv", "*.webm", "*.MP4", "*.MOV", "*.MKV"):
-        raw_files.extend(glob.glob(os.path.join(input_dir, ext)))
-
-    video_files = [f for f in raw_files if "_Vietsub" not in os.path.basename(f)]
-
-    if not video_files:
-        raise Exception("[!] Không tìm thấy video gốc nào trong thư mục input_videos!")
-
-    print(f"🚀 Tìm thấy {len(video_files)} video. Bắt đầu xử lý video dài...")
-    success_count = 0
-
-    for idx, video_path in enumerate(video_files, 1):
-        clean_trash()
-        base_name = os.path.splitext(os.path.basename(video_path))[0]
-        out_name = os.path.join(output_dir, f"{base_name}_Vietsub.mp4")
-        print(f"\n=======================================================")
-        print(f"▶️ [{idx}/{len(video_files)}] Đang làm phim dài: {base_name}")
-        print(f"=======================================================")
-
-        try:
-            srt_p, first_sec = get_srt_from_gemini_auto(video_path)
-            y1, y2 = detect_sub_zone_from_frame(video_path, first_sec, CONFIG["models"][0])
-            tts_p = build_synced_tts_track(srt_p, CONFIG["voice"])
-            render_final_video_auto(video_path, srt_p, tts_p, out_name, CHANNEL_SUB_NAME, y1, y2)
-            print(f"[✓] HOÀN TẤT BẢN DÀI: {out_name}")
-            success_count += 1
-        except Exception as e:
-            import traceback
-            print(f"[❌] Lỗi khi xử lý {base_name}: {e}")
-            traceback.print_exc()
-        clean_trash()
-
-    if success_count == 0:
-        raise Exception("Không render thành công video nào!")
-
-    print("\n🎉 ĐÃ XỬ LÝ XONG TẤT CẢ VIDEO!")
-
-if __name__ == "__main__":
-    main()le='{CJK_FONT}'" if os.path.exists(CJK_FONT) else ""
-
-    vf = (
-        f"[0:v]split[m][c];"
-        f"[c]crop=iw:{crop_h}:0:{y_start},gblur=sigma=15[b];"
-        f"[m][b]overlay=0:{y_start}:enable='{en_str}'[v1];"
-        f"[v1]drawtext=text='sub - {t_sub}':x=25:y=25{font_org_cmd}:fontcolor=white:shadowcolor=black:shadowx=1:shadowy=1,"
-        f"drawtext=text='{t_sub}':x='mod(t*65,w+tw)-tw':y='mod(t*32,h+th)-th':fontsize=20:fontcolor=white@0.10,"
-        f"subtitles=filename='{srt_p}':force_style='FontName={font_name},FontSize={int(sub_fontsize)},Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2.0,Alignment=2,MarginV={center_margin_v}'[vout]"
-    )
-
-    if tts_audio and os.path.exists(tts_audio):
-        af = "[0:a]volume=0.15[bg];[1:a]volume=1.0[voice];[bg][voice]amix=inputs=2:duration=first:dropout_transition=0[aout]"
-        cmd = ["ffmpeg", "-y", "-i", input_video, "-i", tts_audio, "-filter_complex", f"{vf};{af}", "-map", "[vout]", "-map", "[aout]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", output_final]
-    else:
-        cmd = ["ffmpeg", "-y", "-i", input_video, "-filter_complex", vf, "-map", "[vout]", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-c:a", "copy", output_final]
-
-    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return output_final
-
-def clean_trash():
-    shutil.rmtree("temp_tts", ignore_errors=True)
-    for f in ["upload_for_gemini.mp4", "temp_sub.srt", "full_tts.wav", "sub_sample.jpg"]:
-        if os.path.exists(f): 
-            try: os.remove(f)
-            except: pass
-
-def main():
-    input_dir = "input_videos"
-    output_dir = "output_videos"
-    os.makedirs(input_dir, exist_ok=True)
-    os.makedirs(output_dir, exist_ok=True)
-
-    raw_files = []
-    for ext in ("*.mp4", "*.mov", "*.mkv", "*.webm", "*.MP4", "*.MOV", "*.MKV"):
-        raw_files.extend(glob.glob(os.path.join(input_dir, ext)))
-
-    video_files = [f for f in raw_files if "_Vietsub" not in os.path.basename(f)]
-
-    if not video_files:
-        print("[!] Không tìm thấy video gốc nào cần xử lý!")
-        return
-
-    print(f"🚀 Tìm thấy tổng cộng {len(video_files)} video. Bắt đầu xử lý...")
-
-    for idx, video_path in enumerate(video_files, 1):
-        clean_trash()
-        base_name = os.path.splitext(os.path.basename(video_path))[0]
-        out_name = os.path.join(output_dir, f"{base_name}_Vietsub.mp4")
-        print(f"\n=======================================================")
-        print(f"▶️ [{idx}/{len(video_files)}] Đang làm video: {base_name}")
         print(f"=======================================================")
 
         try:
